@@ -650,10 +650,9 @@ $filterDateTo   = trim((string)($_GET['date_to']   ?? ''));
 
 // ── Payout Requests ───────────────────────────────────────────────────────────
 $payoutRequests = [];
-if ($hasPayoutsTable && $dbAvailable)
+if ($hasPayoutsTable && $dbAvailable)ฐ
     try {
-	{
-       $prIdExpr       = bv_sp_pr_col($prMap, 'id');
+	    $prIdExpr       = bv_sp_pr_col($prMap, 'id');
         $prSellerIdExpr = bv_sp_pr_col($prMap, 'seller_id');
         $prStatusExpr   = bv_sp_pr_col($prMap, 'status');
         $prRequestedExpr = bv_sp_pr_col($prMap, 'requested_at');
@@ -721,7 +720,6 @@ if ($hasPayoutsTable && $dbAvailable)
                . ' WHERE ' . implode(' AND ', $prWhere)
                . ' ORDER BY ' . $orderCol . ' DESC LIMIT 200';
         $payoutRequests = bv_sp_q($prSql, $prParams);		
-
    } catch (Throwable $e) {
         $payoutRequests = [];
         bv_sp_add_load_warning('Payout request loading failed; page continued without request rows.');
