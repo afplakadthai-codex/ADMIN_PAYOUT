@@ -608,24 +608,32 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $sellerId = (int)($_POST['seller_id'] ?? 0);
             if ($sellerId <= 0) { throw new RuntimeException('Invalid seller ID.'); }
             $bal = bv_sp_read_balance($sellerId);
-			error_log('[PAYOUT DEBUG] ' . print_r($bal, true));
-            if ((float)($bal['pending_balance'] ?? 0) <= 0) {
-                throw new RuntimeException('Seller #' . $sellerId . ' has no pending balance to release.');
+           $pendingToRelease = max(
+                (float)($bal['pending_balance'] ?? 0),
+                (float)($bal['pending'] ?? 0)
+            );
+
+            if ($pendingToRelease <= 0) {
+                throw new RuntimeException(
+                    'Seller #' . $sellerId . ' has no pending balance to release.'
+                );
             }
-$released = bv_seller_balance_release_pending(
-    $sellerId,
-    (float)$bal['pending_balance'],
-    'Admin pending balance release',
-    '',
-    $adminId
-);
 
-if ($released) {
-    flash_set('success', 'Pending balance released for seller #' . $sellerId . '.');
-} else {
-    flash_set('error', 'Pending balance release failed for seller #' . $sellerId . '. Check logs.');
-}
+            $released = bv_seller_balance_release_pending(
+                $sellerId,
+                $pendingToRelease,
+                'Admin pending balance release',
+                '',
+                $adminId
+            );
 
+            if (!$released) {
+                throw new RuntimeException(
+                    'Pending balance release failed for seller #' . $sellerId . '. Check logs.'
+                );
+            }
+
+            flash_set('success', 'Pending balance released for seller #' . $sellerId . '.');
         } elseif ($action === 'adjust_balance') {
             if (!bv_sp_is_super()) { throw new RuntimeException('Only superadmin/owner can adjust balances.'); }
             if (!$hasAdjustBalance) { throw new RuntimeException('bv_seller_balance_admin_adjust() unavailable.'); }
