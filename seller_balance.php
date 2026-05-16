@@ -1516,10 +1516,14 @@ if (!function_exists('bv_seller_balance_release_pending')) {
             ]);
             $pdo->prepare(
                 'UPDATE seller_balances
-                 SET pending_balance = pending_balance - :amt,
-                     available_balance = available_balance + :amt
+                SET pending_balance = pending_balance - :debit_amt,
+                     available_balance = available_balance + :credit_amt 
                  WHERE seller_id = :sid'
-            )->execute([':amt' => $releaseAmt, ':sid' => $sellerId]);
+            )->execute([
+                ':debit_amt' => $releaseAmt,
+                ':credit_amt' => $releaseAmt,
+                ':sid' => $sellerId,
+            ]);  
             $pdo->commit();
             return true;
         } catch (Throwable $e) {
