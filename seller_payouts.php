@@ -608,11 +608,23 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $sellerId = (int)($_POST['seller_id'] ?? 0);
             if ($sellerId <= 0) { throw new RuntimeException('Invalid seller ID.'); }
             $bal = bv_sp_read_balance($sellerId);
-            if ((float)($bal['pending'] ?? 0) <= 0) {
+			error_log('[PAYOUT DEBUG] ' . print_r($bal, true));
+            if ((float)($bal['pending_balance'] ?? 0) <= 0) {
                 throw new RuntimeException('Seller #' . $sellerId . ' has no pending balance to release.');
             }
-            bv_seller_balance_release_pending($sellerId, (float)$bal['pending'], $adminId);
-            flash_set('message', 'Pending balance released for seller #' . $sellerId . '.');
+$released = bv_seller_balance_release_pending(
+    $sellerId,
+    (float)$bal['pending_balance'],
+    'Admin pending balance release',
+    '',
+    $adminId
+);
+
+if ($released) {
+    flash_set('success', 'Pending balance released for seller #' . $sellerId . '.');
+} else {
+    flash_set('error', 'Pending balance release failed for seller #' . $sellerId . '. Check logs.');
+}
 
         } elseif ($action === 'adjust_balance') {
             if (!bv_sp_is_super()) { throw new RuntimeException('Only superadmin/owner can adjust balances.'); }
@@ -650,7 +662,7 @@ $filterDateTo   = trim((string)($_GET['date_to']   ?? ''));
 
 // ── Payout Requests ───────────────────────────────────────────────────────────
 $payoutRequests = [];
-if ($hasPayoutsTable && $dbAvailable)ฐ
+if ($hasPayoutsTable && $dbAvailable){
     try {
 	    $prIdExpr       = bv_sp_pr_col($prMap, 'id');
         $prSellerIdExpr = bv_sp_pr_col($prMap, 'seller_id');
