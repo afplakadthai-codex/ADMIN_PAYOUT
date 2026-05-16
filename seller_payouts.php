@@ -224,7 +224,26 @@ if (!function_exists('table_exists')) {
         global $_bvSpTableCache;
         if ($t === '') { return false; }
         if (isset($_bvSpTableCache[$t])) { return $_bvSpTableCache[$t]; }
-        $_bvSpTableCache[$t] = (bool)bv_sp_q1('SHOW TABLES LIKE ?', [$t]);
+ 
+        $pdo = bv_sp_pdo();
+        if (!$pdo) {
+            $_bvSpTableCache[$t] = false;
+            return false;
+        }
+
+        try {
+            $stmt = $pdo->prepare(
+                'SELECT COUNT(*)
+                   FROM information_schema.tables
+                  WHERE table_schema = DATABASE()
+                    AND table_name = ?'
+            );
+            $stmt->execute([$t]);
+            $_bvSpTableCache[$t] = ((int)$stmt->fetchColumn()) > 0;
+        } catch (Throwable) {
+            $_bvSpTableCache[$t] = false;
+        }
+
         return $_bvSpTableCache[$t];
     }
 }
@@ -315,6 +334,64 @@ if (!function_exists('redirect_safe')) {
         exit;
     }
 }
+
+
+if (!function_exists('bv_sp_first_existing_col')) {
+    function bv_sp_first_existing_col(string $table, array $candidates): string
+    {
+        foreach ($candidates as $candidate) {
+            $candidate = (string)$candidate;
+            if ($candidate !== '' && column_exists($table, $candidate)) { return $candidate; }
+        }
+        return '';
+    }
+}
+
+if (!function_exists('bv_sp_payout_request_map')) {
+    function bv_sp_payout_request_map(): array
+    {
+        $table = 'seller_payout_requests';
+        return [
+            'id'                => bv_sp_first_existing_col($table, ['id', 'request_id', 'payout_request_id', 'payout_id']),
+            'seller_id'         => bv_sp_first_existing_col($table, ['seller_id', 'user_id', 'vendor_id', 'seller_user_id']),
+            'amount'            => bv_sp_first_existing_col($table, ['amount', 'payout_amount', 'requested_amount', 'amount_requested', 'total_amount']),
+            'currency'          => bv_sp_first_existing_col($table, ['currency', 'currency_code']),
+            'status'            => bv_sp_first_existing_col($table, ['status', 'request_status', 'payout_status', 'state']),
+            'payout_method'     => bv_sp_first_existing_col($table, ['payout_method', 'payment_method', 'method']),
+            'bank_name'         => bv_sp_first_existing_col($table, ['bank_name']),
+            'bank_account_number' => bv_sp_first_existing_col($table, ['bank_account_number', 'account_number', 'bank_account']),
+            'bank_account_name' => bv_sp_first_existing_col($table, ['bank_account_name', 'account_name']),
+            'promptpay_number'  => bv_sp_first_existing_col($table, ['promptpay_number', 'promptpay']),
+            'payment_reference' => bv_sp_first_existing_col($table, ['payment_reference', 'payment_ref', 'transaction_reference', 'transaction_ref']),
+            'admin_note'        => bv_sp_first_existing_col($table, ['admin_note', 'admin_notes', 'note']),
+            'seller_note'       => bv_sp_first_existing_col($table, ['seller_note', 'seller_notes', 'request_note']),
+            'requested_at'      => bv_sp_first_existing_col($table, ['requested_at', 'created_at', 'created_on', 'request_date']),
+            'approved_at'       => bv_sp_first_existing_col($table, ['approved_at']),
+            'rejected_at'       => bv_sp_first_existing_col($table, ['rejected_at']),
+            'paid_at'           => bv_sp_first_existing_col($table, ['paid_at']),
+            'cancelled_at'      => bv_sp_first_existing_col($table, ['cancelled_at', 'canceled_at']),
+            'updated_at'        => bv_sp_first_existing_col($table, ['updated_at', 'modified_at', 'updated_on']),
+            'admin_id'          => bv_sp_first_existing_col($table, ['admin_id', 'approved_by', 'updated_by']),
+        ];
+    }
+}
+
+if (!function_exists('bv_sp_pr_col')) {
+    function bv_sp_pr_col(array $map, string $key): string
+    {
+        $column = (string)($map[$key] ?? '');
+        return $column !== '' ? 'pr.' . bv_sp_ident($column) : '';
+    }
+}
+
+if (!function_exists('bv_sp_pr_select')) {
+    function bv_sp_pr_select(array $map, string $key, string $fallbackSql): string
+    {
+        $expr = bv_sp_pr_col($map, $key);
+        return ($expr !== '' ? $expr : $fallbackSql) . ' AS ' . bv_sp_ident($key);
+    }
+}
+
 
 $loadWarnings = [];
 
@@ -432,10 +509,13 @@ $hasPayoutsTable   = $dbAvailable && table_exists('seller_payout_requests');
 $hasLedgerTable    = $dbAvailable && bv_sp_seller_balance_entries_exists();
 $hasUsersTable     = $dbAvailable && table_exists('users');
 $hasSellerApps     = $dbAvailable && table_exists('seller_applications');
+$prMap             = $hasPayoutsTable ? bv_sp_payout_request_map() : [];
+$prHasRequestId    = !empty($prMap['id']);
+$prHasStatus       = !empty($prMap['status']);
 
-$hasApprove        = $sbAvailable && $hasPayoutsTable && function_exists('bv_seller_balance_approve_payout');
-$hasReject         = $sbAvailable && $hasPayoutsTable && function_exists('bv_seller_balance_reject_payout');
-$hasMarkPaid       = $sbAvailable && $hasPayoutsTable && $isSuperAdmin && function_exists('bv_seller_balance_mark_payout_paid');
+$hasApprove        = $sbAvailable && $hasPayoutsTable && $prHasRequestId && $prHasStatus && function_exists('bv_seller_balance_approve_payout');
+$hasReject         = $sbAvailable && $hasPayoutsTable && $prHasRequestId && $prHasStatus && function_exists('bv_seller_balance_reject_payout');
+$hasMarkPaid       = $sbAvailable && $hasPayoutsTable && $prHasRequestId && $prHasStatus && $isSuperAdmin && function_exists('bv_seller_balance_mark_payout_paid');
 $hasReleasePending = $sbAvailable && $isSuperAdmin && function_exists('bv_seller_balance_release_pending') && function_exists('bv_seller_balance_get');
 $hasAdjustBalance  = $sbAvailable && $isSuperAdmin && function_exists('bv_seller_balance_admin_adjust');
 
@@ -453,7 +533,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             if (!$hasApprove) { throw new RuntimeException('bv_seller_balance_approve_payout() is unavailable.'); }
             $requestId = (int)($_POST['request_id'] ?? 0);
             if ($requestId <= 0) { throw new RuntimeException('Invalid request ID.'); }
-            $req = bv_sp_q1('SELECT id, status FROM seller_payout_requests WHERE id = ? LIMIT 1', [$requestId]);
+             $reqIdCol = (string)($prMap['id'] ?? '');
+            $reqStatusCol = (string)($prMap['status'] ?? '');
+            if ($reqIdCol === '' || $reqStatusCol === '') { throw new RuntimeException('Payout request ID/status columns are unavailable.'); }
+            $req = bv_sp_q1(
+                'SELECT ' . bv_sp_ident($reqIdCol) . ' AS id, ' . bv_sp_ident($reqStatusCol) . ' AS status FROM seller_payout_requests WHERE ' . bv_sp_ident($reqIdCol) . ' = ? LIMIT 1',
+                [$requestId]
+            );
             if (!$req) { throw new RuntimeException('Payout request #' . $requestId . ' not found.'); }
             $cs = strtolower((string)($req['status'] ?? ''));
             if (!in_array($cs, ['pending', 'requested'], true)) {
@@ -470,7 +556,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $adminNote = trim((string)($_POST['admin_note'] ?? ''));
             if ($requestId <= 0) { throw new RuntimeException('Invalid request ID.'); }
             if ($adminNote === '') { throw new RuntimeException('Admin note is required to reject a request.'); }
-            $req = bv_sp_q1('SELECT id, status FROM seller_payout_requests WHERE id = ? LIMIT 1', [$requestId]);
+            $reqIdCol = (string)($prMap['id'] ?? '');
+            $reqStatusCol = (string)($prMap['status'] ?? '');
+            if ($reqIdCol === '' || $reqStatusCol === '') { throw new RuntimeException('Payout request ID/status columns are unavailable.'); }
+            $req = bv_sp_q1(
+                'SELECT ' . bv_sp_ident($reqIdCol) . ' AS id, ' . bv_sp_ident($reqStatusCol) . ' AS status FROM seller_payout_requests WHERE ' . bv_sp_ident($reqIdCol) . ' = ? LIMIT 1',
+                [$requestId]
+            );
             if (!$req) { throw new RuntimeException('Payout request #' . $requestId . ' not found.'); }
             $cs = strtolower((string)($req['status'] ?? ''));
             if (!in_array($cs, ['pending', 'requested', 'approved'], true)) {
@@ -490,7 +582,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $adminNote        = trim((string)($_POST['admin_note'] ?? ''));
             if ($requestId <= 0)          { throw new RuntimeException('Invalid request ID.'); }
             if ($paymentReference === '')  { throw new RuntimeException('Payment reference is required.'); }
-            $req = bv_sp_q1('SELECT id, status FROM seller_payout_requests WHERE id = ? LIMIT 1', [$requestId]);
+           $reqIdCol = (string)($prMap['id'] ?? '');
+            $reqStatusCol = (string)($prMap['status'] ?? '');
+            if ($reqIdCol === '' || $reqStatusCol === '') { throw new RuntimeException('Payout request ID/status columns are unavailable.'); }
+            $req = bv_sp_q1(
+                'SELECT ' . bv_sp_ident($reqIdCol) . ' AS id, ' . bv_sp_ident($reqStatusCol) . ' AS status FROM seller_payout_requests WHERE ' . bv_sp_ident($reqIdCol) . ' = ? LIMIT 1',
+                [$requestId]
+            ); 
             if (!$req) { throw new RuntimeException('Payout request #' . $requestId . ' not found.'); }
             $cs = strtolower((string)($req['status'] ?? ''));
             if ($cs === 'paid') {
@@ -553,69 +651,74 @@ $filterDateTo   = trim((string)($_GET['date_to']   ?? ''));
 // ── Payout Requests ───────────────────────────────────────────────────────────
 $payoutRequests = [];
 if ($hasPayoutsTable && $dbAvailable) {
-  try {
-        $requiredPrCols = ['id', 'seller_id', 'amount', 'status'];
-        $canLoadPayouts = true;
-        foreach ($requiredPrCols as $c) {
-            if (!column_exists('seller_payout_requests', $c)) {
-                $canLoadPayouts = false;
-                bv_sp_add_load_warning('seller_payout_requests is missing required column `' . $c . '`; payout request rows were not loaded.');
-            }
+       $prIdExpr       = bv_sp_pr_col($prMap, 'id');
+        $prSellerIdExpr = bv_sp_pr_col($prMap, 'seller_id');
+        $prStatusExpr   = bv_sp_pr_col($prMap, 'status');
+        $prRequestedExpr = bv_sp_pr_col($prMap, 'requested_at');
+
+        $prSel = [
+            bv_sp_pr_select($prMap, 'id', '0'),
+            bv_sp_pr_select($prMap, 'seller_id', '0'),
+            bv_sp_pr_select($prMap, 'amount', '0'),
+            bv_sp_pr_select($prMap, 'currency', "'USD'"),
+            bv_sp_pr_select($prMap, 'status', "'unknown'"),
+            bv_sp_pr_select($prMap, 'payout_method', "''"),
+            bv_sp_pr_select($prMap, 'bank_name', "''"),
+            bv_sp_pr_select($prMap, 'bank_account_number', "''"),
+            bv_sp_pr_select($prMap, 'bank_account_name', "''"),
+            bv_sp_pr_select($prMap, 'promptpay_number', "''"),
+            bv_sp_pr_select($prMap, 'payment_reference', "''"),
+            bv_sp_pr_select($prMap, 'admin_note', "''"),
+            bv_sp_pr_select($prMap, 'seller_note', "''"),
+            bv_sp_pr_select($prMap, 'requested_at', 'NULL'),
+            bv_sp_pr_select($prMap, 'approved_at', 'NULL'),
+            bv_sp_pr_select($prMap, 'rejected_at', 'NULL'),
+            bv_sp_pr_select($prMap, 'paid_at', 'NULL'),
+            bv_sp_pr_select($prMap, 'cancelled_at', 'NULL'),
+            bv_sp_pr_select($prMap, 'updated_at', 'NULL'),
+            bv_sp_pr_select($prMap, 'admin_id', 'NULL'),
+        ]; 
+        $prJoinU = '';
+        $prJoinA = '';
+        if ($prSellerIdExpr !== '' && $hasUsersTable && column_exists('users', 'id')) {
+            $firstExpr = column_exists('users', 'first_name') ? "COALESCE(u.first_name,'')" : "''";
+            $lastExpr  = column_exists('users', 'last_name')  ? "COALESCE(u.last_name,'')"  : "''";
+            $prSel[]   = "TRIM(CONCAT({$firstExpr},' ',{$lastExpr})) AS seller_full_name";
+            $prSel[]   = column_exists('users', 'email') ? "COALESCE(u.email,'') AS seller_email" : "'' AS seller_email";
+            $prJoinU   = 'LEFT JOIN users u ON u.id = ' . $prSellerIdExpr;
+        } else {
+            $prSel[] = "'' AS seller_full_name";
+            $prSel[] = "'' AS seller_email";
         }
-
-       if ($canLoadPayouts) {
-            $prKnownCols = ['id', 'seller_id', 'amount', 'currency', 'status', 'payout_method',
-                            'bank_name', 'bank_account_number', 'bank_account_name', 'promptpay_number',
-                            'payment_reference', 'admin_note', 'seller_note',
-                            'requested_at', 'approved_at', 'rejected_at', 'paid_at', 'cancelled_at',
-                            'updated_at', 'admin_id'];
-            $prSel  = [];
-            foreach ($prKnownCols as $c) {
-                if (column_exists('seller_payout_requests', $c)) { $prSel[] = 'pr.`' . $c . '`'; }
-            }
-
-           $prJoinU = '';
-            $prJoinA = '';
-            if ($hasUsersTable && column_exists('users', 'id')) {
-                $firstExpr = column_exists('users', 'first_name') ? "COALESCE(u.first_name,'')" : "''";
-                $lastExpr  = column_exists('users', 'last_name')  ? "COALESCE(u.last_name,'')"  : "''";
-                $prSel[]   = "TRIM(CONCAT({$firstExpr},' ',{$lastExpr})) AS seller_full_name";
-                $prSel[]   = column_exists('users', 'email') ? "COALESCE(u.email,'') AS seller_email" : "'' AS seller_email";
-                $prJoinU   = 'LEFT JOIN users u ON u.id = pr.seller_id';
-            } else {
-                $prSel[] = "'' AS seller_full_name";
-                $prSel[] = "'' AS seller_email";
-            }
-            if ($hasSellerApps && column_exists('seller_applications', 'user_id')) {
-                $prSel[] = column_exists('seller_applications', 'farm_name') ? "COALESCE(sa.farm_name,'') AS seller_farm_name" : "'' AS seller_farm_name";
-                $prJoinA = 'LEFT JOIN seller_applications sa ON sa.user_id = pr.seller_id';
-            } else {
-                $prSel[] = "'' AS seller_farm_name";
-            }
-
-            $prWhere  = ['1=1'];
-            $prParams = [];
-            if ($filterStatus !== '') {
-                $prWhere[]  = 'pr.`status` = ?';
-                $prParams[] = $filterStatus;
-            }
-            if ($filterKeyword !== '') {
-                $prWhere[]  = '(CAST(pr.`seller_id` AS CHAR) LIKE ? OR CAST(pr.`id` AS CHAR) LIKE ?)';
-                $prParams[] = '%' . $filterKeyword . '%';
-                $prParams[] = '%' . $filterKeyword . '%';
-            }
-            $hasReqAt = column_exists('seller_payout_requests', 'requested_at');
-            $orderCol = $hasReqAt ? 'pr.`requested_at`' : 'pr.`id`';
-            if ($hasReqAt) {
-                if ($filterDateFrom !== '') { $prWhere[] = 'pr.`requested_at` >= ?'; $prParams[] = $filterDateFrom . ' 00:00:00'; }
-                if ($filterDateTo   !== '') { $prWhere[] = 'pr.`requested_at` <= ?'; $prParams[] = $filterDateTo   . ' 23:59:59'; }
-            }
-            $prSql = 'SELECT ' . implode(', ', $prSel)
-                   . ' FROM `seller_payout_requests` pr'
-                   . ' ' . $prJoinU . ' ' . $prJoinA
-                   . ' WHERE ' . implode(' AND ', $prWhere)
-                   . ' ORDER BY ' . $orderCol . ' DESC LIMIT 200';
-            $payoutRequests = bv_sp_q($prSql, $prParams);
+        if ($prSellerIdExpr !== '' && $hasSellerApps && column_exists('seller_applications', 'user_id')) {
+            $prSel[] = column_exists('seller_applications', 'farm_name') ? "COALESCE(sa.farm_name,'') AS seller_farm_name" : "'' AS seller_farm_name";
+            $prJoinA = 'LEFT JOIN seller_applications sa ON sa.user_id = ' . $prSellerIdExpr;
+        } else {
+            $prSel[] = "'' AS seller_farm_name";
+        } 
+        $prWhere  = ['1=1'];
+        $prParams = [];
+        if ($filterStatus !== '' && $prStatusExpr !== '') {
+            $prWhere[]  = $prStatusExpr . ' = ?';
+            $prParams[] = $filterStatus;
+        }
+        if ($filterKeyword !== '') {
+            $keywordParts = [];
+            if ($prSellerIdExpr !== '') { $keywordParts[] = 'CAST(' . $prSellerIdExpr . ' AS CHAR) LIKE ?'; $prParams[] = '%' . $filterKeyword . '%'; }
+            if ($prIdExpr !== '') { $keywordParts[] = 'CAST(' . $prIdExpr . ' AS CHAR) LIKE ?'; $prParams[] = '%' . $filterKeyword . '%'; }
+            if ($keywordParts) { $prWhere[] = '(' . implode(' OR ', $keywordParts) . ')'; }
+        }
+        $orderCol = $prRequestedExpr !== '' ? $prRequestedExpr : ($prIdExpr !== '' ? $prIdExpr : '1');
+        if ($prRequestedExpr !== '') {
+            if ($filterDateFrom !== '') { $prWhere[] = $prRequestedExpr . ' >= ?'; $prParams[] = $filterDateFrom . ' 00:00:00'; }
+            if ($filterDateTo   !== '') { $prWhere[] = $prRequestedExpr . ' <= ?'; $prParams[] = $filterDateTo   . ' 23:59:59'; }
+        }
+        $prSql = 'SELECT ' . implode(', ', $prSel)
+               . ' FROM `seller_payout_requests` pr'
+               . ' ' . $prJoinU . ' ' . $prJoinA
+               . ' WHERE ' . implode(' AND ', $prWhere)
+               . ' ORDER BY ' . $orderCol . ' DESC LIMIT 200';
+        $payoutRequests = bv_sp_q($prSql, $prParams);		
         }
    } catch (Throwable $e) {
         $payoutRequests = [];
@@ -716,9 +819,11 @@ $stats = [
     'total_paid_out'    => 0.0,
 ];
 try {
-    if ($hasPayoutsTable && $dbAvailable && column_exists('seller_payout_requests', 'status')) {
-        $sumExpr = column_exists('seller_payout_requests', 'amount') ? 'COALESCE(SUM(amount),0)' : '0';
-        foreach (bv_sp_q('SELECT status, COUNT(*) AS cnt, ' . $sumExpr . ' AS tot FROM seller_payout_requests GROUP BY status') as $row) {
+    $statusExpr = $hasPayoutsTable ? bv_sp_pr_col($prMap, 'status') : '';
+    if ($hasPayoutsTable && $dbAvailable && $statusExpr !== '') {
+        $amountExpr = bv_sp_pr_col($prMap, 'amount');
+        $sumExpr = $amountExpr !== '' ? 'COALESCE(SUM(' . $amountExpr . '),0)' : '0';
+        foreach (bv_sp_q('SELECT ' . $statusExpr . ' AS status, COUNT(*) AS cnt, ' . $sumExpr . ' AS tot FROM seller_payout_requests pr GROUP BY ' . $statusExpr) as $row) {
             $s = strtolower((string)($row['status'] ?? ''));
             if (in_array($s, ['pending', 'requested'], true)) { $stats['pending_requests'] += (int)$row['cnt']; }
             if ($s === 'approved') { $stats['approved_requests'] += (int)$row['cnt']; }
